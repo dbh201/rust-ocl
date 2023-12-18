@@ -14,8 +14,11 @@ use opencl3::kernel::*;
 
 use md5::compute;
 use std::os::raw::c_void;
+use std::io::BufReader;
+use std::io::prelude::*;
 
 fn main() {
+    const WORK_SIZE: usize = 1024*1024;
     let platforms = get_platforms().unwrap();
     for (i, v) in platforms.iter().enumerate() {
         println!("Platform {}:",i);
@@ -31,46 +34,64 @@ fn main() {
     let gpus = platforms[1].get_devices(CL_DEVICE_TYPE_GPU).expect("Couldn't get GPU devices!");
     let device = Device::new(gpus[0]);
     let ctx = Context::from_device(&device).expect("Couldn't create context!");
-    println!("Generating test data ...");
-    let mut data_generator: [u8;16] = [0;16];
-    for i in 0..16 {
-        data_generator[i] = rand::random::<u8>();
-    }
-    let mut data1 = data_generator;
-    let mut data_generator: [u8;16] = [0;16];
-    for i in 0..16 {
-        data_generator[i] = rand::random::<u8>();
-    }
-    let mut data2 = data_generator;
 
-    let mut datao: [u8;16] = [0;16];
-    let src = "
-void kernel simple_add(global const int* A, global const int* B, global int* C) {
-   C[get_global_id(0)]=A[get_global_id(0)]+B[get_global_id(0)]; 
-}";
-    let program = Program::create_and_build_from_source( &ctx, &src, "" ).expect("Couldn't compile program!");
-    let kernel = Kernel::create(&program, "simple_add").expect("Couldn't create kernel!");
+    println!("Retrieving OpenCL source ...");
+    let srcFile = std::fs::File::open("md5.c").expect("Couldn't open source file.");
+    let mut src = String::new();
+    BufReader::new(srcFile).read_to_string(&mut src).expect("Couldn't load source file.");
+    println!("Compiling program ...");
+    let program = Program::create_and_build_from_source( &ctx, src.as_str(), "" ).expect("Couldn't compile program!");
+    println!("Compiling kernel ...");
+    let kernel = Kernel::create(&program, "getmd5").expect("Couldn't create kernel!");
 
-    let buffer1;
-    let buffer2;
-    let output;
+    let mut sum: [[u8;16];WORK_SIZE] = [[0;16];WORK_SIZE];
+    let mut block: [[u8;64];WORK_SIZE] = [[0;64];WORK_SIZE];
+    let mut size: [usize;WORK_SIZE] = [0;WORK_SIZE];
+    let mut expected: [[u8;16];WORK_SIZE] = [[0;16];WORK_SIZE];
+
+    println!("Generating {} test blocks from 0-56 bytes ...", WORK_SIZE);
+    for i in 0..WORK_SIZE {
+        size[i] = rand::random::<usize>()%56;
+        for j in 0..size[i] {
+            block[i][j] = rand::random::<u8>();
+        }
+        //println!("JOB {}: {:02x?}",i,block[i]);
+    }
+    
+    let outputSum;
+    let inputBlock;
+    let inputSize;
     let queue;
+    let event;
     unsafe {
         println!("UNSAFE");
         println!("Creating device buffers...");
-        buffer1 = Buffer::<u8>::create(&ctx,CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,16,data1.as_mut_ptr() as *mut c_void).expect("Couldn't allocate memory for buffer 1");
-        buffer2 = Buffer::<u8>::create(&ctx,CL_MEM_READ_ONLY | CL_MEM_COPY_HOST_PTR,16,data2.as_mut_ptr() as *mut c_void).expect("Couldn't allocate memory for buffer 2");
-        output = Buffer::<u8>::create(&ctx,CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR,16,datao.as_mut_ptr() as *mut c_void).expect("Couldn't allocate memory for output");
+        outputSum = Buffer::<[u8;16]>::create(&ctx,CL_MEM_WRITE_ONLY | CL_MEM_USE_HOST_PTR,WORK_SIZE,sum.as_mut_ptr() as *mut c_void).expect("Couldn't allocate memory for targetSum");
+        inputBlock = Buffer::<[u8;64]>::create(&ctx,CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR,WORK_SIZE,block.as_mut_ptr() as *mut c_void).expect("Couldn't allocate memory for outputRes");
+        inputSize = Buffer::<usize>::create(&ctx,CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR,WORK_SIZE,size.as_mut_ptr() as *mut c_void).expect("Couldn't allocate memory for outputSize");
         println!("Creating queue...");
         queue = CommandQueue::create_with_properties(&ctx,device.id(),0,0).expect("Couldn't create queue!");
-        println!("Performing simple add...");
-        let event = ExecuteKernel::new(&kernel).set_arg(&buffer1).set_arg(&buffer2).set_arg(&output).set_global_work_size(16).enqueue_nd_range(&queue).expect("Execution failed.");
-        event.wait().expect("Event failed.");
+        println!("Dispatch mass MD5 computation event...");
+        event = ExecuteKernel::new(&kernel).set_arg(&outputSum).set_arg(&inputBlock).set_arg(&inputSize).set_global_work_size(WORK_SIZE).enqueue_nd_range(&queue).expect("Execution failed.");
         println!("SAFE");
     }
-    println!("{:?}",data1);
-    println!("{:?}",data2);
-    println!("{:?}",datao);
+
+    println!("Single-threaded CPU ...");
+    for i in 0..WORK_SIZE {
+        expected[i] = md5::compute(&block[i][0..size[i]]).into();
+    }
+    println!("Done single-threaded work.");
+    event.wait().expect("Event waiting failed?");
+    println!("Finished waiting on the GPU.");
+    for i in 0..WORK_SIZE {
+        for j in 0..16 {
+            if sum[i][j] != expected[i][j] {
+                println!("Job {} failed comparison:\nRetrieved: {:?}\n Expected: {:?}",i,sum[i],expected[i]);
+                return;
+            }
+        }
+    }
+    println!("All tests passed!");
 }
 
 fn print_devices(v: &Platform) {
