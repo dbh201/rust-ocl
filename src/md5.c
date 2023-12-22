@@ -57,7 +57,6 @@ kernel void getmd5(global uchar *sums, global const uchar *blocks, global const 
 	unsigned int C = c0;
 	unsigned int D = d0;
 
-	printf("gid: %i, size: %i\nblock: %08v16x",gid,size,M);
 	for(int i = 0; i < 64; i++) {
 		unsigned int F;
 		size_t g;
@@ -112,4 +111,22 @@ kernel void getmd5(global uchar *sums, global const uchar *blocks, global const 
 		sums[gid*16 + 15-i] = d0 & 0xFF;
 		d0 >>= 8;
 	}
+	// need to fit everything into a printf so that it all prints at the same time
+	printf("gid: % 2i, size: % 2i\tblock: %08v16x\n%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x\n",gid,size,M,
+		sums[gid*16],
+		sums[gid*16 + 1],
+		sums[gid*16 + 2],
+		sums[gid*16 + 3],
+		sums[gid*16 + 4],
+		sums[gid*16 + 5],
+		sums[gid*16 + 6],
+		sums[gid*16 + 7],
+		sums[gid*16 + 8],
+		sums[gid*16 + 9],
+		sums[gid*16 + 10],
+		sums[gid*16 + 11],
+		sums[gid*16 + 12],
+		sums[gid*16 + 13],
+		sums[gid*16 + 14],
+		sums[gid*16 + 15] );
 }

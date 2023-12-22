@@ -18,7 +18,7 @@ use std::io::BufReader;
 use std::io::prelude::*;
 
 fn main() {
-    const WORK_SIZE: usize = 1024*1024;
+    const WORK_SIZE: usize = 256;
     let platforms = get_platforms().unwrap();
     for (i, v) in platforms.iter().enumerate() {
         println!("Platform {}:",i);
@@ -29,9 +29,9 @@ fn main() {
         print_devices(v);
     }
     println!("There should be logic here, but for now platform and device is hardcoded to my specific machine.");
-    println!("Creating context from GPU device 0 on platform 1...");
+    println!("Creating context from GPU device 0 on platform 0...");
 
-    let gpus = platforms[1].get_devices(CL_DEVICE_TYPE_GPU).expect("Couldn't get GPU devices!");
+    let gpus = platforms[0].get_devices(CL_DEVICE_TYPE_GPU).expect("Couldn't get GPU devices!");
     let device = Device::new(gpus[0]);
     let ctx = Context::from_device(&device).expect("Couldn't create context!");
 
@@ -44,7 +44,7 @@ fn main() {
     println!("Compiling kernel ...");
     let kernel = Kernel::create(&program, "getmd5").expect("Couldn't create kernel!");
 
-    let mut sum: [[u8;16];WORK_SIZE] = [[0;16];WORK_SIZE];
+    let mut sum: [u8;16*WORK_SIZE] = [0;16*WORK_SIZE];
     let mut block: [[u8;64];WORK_SIZE] = [[0;64];WORK_SIZE];
     let mut size: [usize;WORK_SIZE] = [0;WORK_SIZE];
     let mut expected: [[u8;16];WORK_SIZE] = [[0;16];WORK_SIZE];
@@ -83,10 +83,14 @@ fn main() {
     println!("Done single-threaded work.");
     event.wait().expect("Event waiting failed?");
     println!("Finished waiting on the GPU.");
+    let sumPtr;
+    unsafe {
+        sumPtr = enqueue_read_buffer(queue.into(),outputSum.into(),CL_TRUE,0,WORK_SIZE*16,sum.as_mut_ptr() as *mut c_void,0,std::ptr::null()).unwrap();
+    }
     for i in 0..WORK_SIZE {
         for j in 0..16 {
-            if sum[i][j] != expected[i][j] {
-                println!("Job {} failed comparison:\nRetrieved: {:?}\n Expected: {:?}",i,sum[i],expected[i]);
+            if sum[i*16 + j] != expected[i][j] {
+                println!("Job {} failed comparison:\nRetrieved: {:02x?}\n Expected: {:02x?}",i,<[u8;16]>::try_from(&sum[i*16..i*16+16]).unwrap(),expected[i]);
                 return;
             }
         }
